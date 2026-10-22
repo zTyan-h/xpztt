@@ -1,5 +1,12 @@
 // Constructor standalone. O Firebase continua autorizando cada operação pelas rules e pelo ID token do usuário.
 const MiB=1024*1024,RELAY_LIMIT=4*MiB,ROOT='constructor/v1';
+const SOURCE_BASE='https://raw.githubusercontent.com/zTyan-h/xpztt/main/constructor/';
+// Configuração pública; variáveis do painel podem substituir estes valores.
+const FIREBASE_DEFAULTS={
+  FIREBASE_PROJECT_ID:'constructor-v1',
+  FIREBASE_API_KEY:'AIzaSyBpzVYZiUSPbHzAfFLvoQxB07t4TzeVjI0',
+  FIREBASE_DATABASE_URL:'https://constructor-v1-default-rtdb.firebaseio.com'
+};
 const SOURCES=new Set([
   'src/shell.js','src/hotels/protocol-habblive.js','src/hotels/protocol-habblet.js','src/hotels/hotels.js','src/hotels/furniture.js',
   'src/core/core.js','src/core/runtime.js','src/services/storage.js','src/services/firebase.js',
@@ -15,6 +22,7 @@ class Fault extends Error{constructor(status,message){super(message);this.status
 function fail(status,message){throw new Fault(status,message);}
 function json(value,status=200){return new Response(JSON.stringify(value),{status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'}});}
 function configuration(env){
+  env={...FIREBASE_DEFAULTS,...env};
   const firebase={projectId:String(env.FIREBASE_PROJECT_ID||'').trim(),apiKey:String(env.FIREBASE_API_KEY||'').trim(),databaseURL:String(env.FIREBASE_DATABASE_URL||'').trim()};
   let enabled=false;
   try{
@@ -50,12 +58,18 @@ function uniqueQuery(url,allowed){
 async function asset(request,env,path){
   if(request.method!=='GET')fail(405,'Método não permitido.');
   if(!SOURCES.has(path))fail(404,'Arquivo não permitido.');
-  if(!env.ASSETS?.fetch)fail(503,'Prepare os arquivos estáticos do Worker.');
-  const upstream=await env.ASSETS.fetch(new Request(new URL('/'+path,request.url),{method:'GET',redirect:'manual'}));
-  if(upstream.status!==200)fail(upstream.status===404?404:502,'Arquivo estático indisponível.');
-  const body=await bytes(upstream,path.startsWith('furnis/')?32*MiB:8*MiB);
-  const type=path.endsWith('.js')?'application/javascript; charset=utf-8':path.endsWith('.json')?'application/json; charset=utf-8':'font/ttf';
-  return new Response(body,{headers:{'Content-Type':type,'Cache-Control':'public, max-age=300'}});
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),30000);
+  try{
+    const source=new URL(path,SOURCE_BASE),version=new URL(request.url).searchParams.get('v');
+    if(version)source.searchParams.set('v',version);
+    const upstream=env.ASSETS?.fetch
+      ?await env.ASSETS.fetch(new Request(new URL('/'+path,request.url),{method:'GET',redirect:'manual',signal:controller.signal}))
+      :await fetch(source.href,{method:'GET',redirect:'manual',signal:controller.signal});
+    if(upstream.status!==200)fail(upstream.status===404?404:502,'Arquivo indisponível. Confira o caminho e o acesso público ao repositório.');
+    const body=await bytes(upstream,path.startsWith('furnis/')?32*MiB:8*MiB);
+    const type=path.endsWith('.js')?'application/javascript; charset=utf-8':path.endsWith('.json')?'application/json; charset=utf-8':'font/ttf';
+    return new Response(body,{headers:{'Content-Type':type,'Cache-Control':'public, max-age=300'}});
+  }catch(error){if(error instanceof Fault)throw error;fail(502,'Não foi possível carregar o arquivo. Tente novamente.');}finally{clearTimeout(timer);}
 }
 function rtdbPath(path,method){
   if(path===ROOT)return method==='PATCH'?{kind:'root'}:null;

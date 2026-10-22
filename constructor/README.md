@@ -26,30 +26,22 @@ xpztt/
 ## Requisitos
 
 - Navegador atualizado com Tampermonkey e execução de userscripts habilitada.
-- Conta Cloudflare para disponibilizar o Worker.
-- Node.js 22 ou superior para os scripts de preparação e o Wrangler.
+- Conta Cloudflare para publicar o Worker pelo painel.
 
 ## Disponibilizar o Worker
 
-Na raiz do repositório:
+1. No painel da Cloudflare, crie um Worker e abra **Edit code**.
+2. Cole o conteúdo completo de `worker/worker.js` e clique em **Deploy**.
+3. Copie a URL HTTPS do Worker (`https://nome.workers.dev`).
 
-```sh
-cd constructor
-node scripts/build-loader.cjs
-node scripts/prepare-worker.cjs
-cd worker
-npx wrangler login
-npx wrangler deploy
-```
-
-O Worker já aponta para o Firebase **constructor-v1**. Configuração e regras: [Firebase](worker/firebase/README.md).
+O Worker já aponta para o Firebase **constructor-v1** e carrega os arquivos públicos de `zTyan-h/xpztt`, em `main/constructor/`. Não precisa de Node, Wrangler ou vínculo `ASSETS`. Configuração e regras: [Firebase](worker/firebase/README.md).
 
 ## Instalar e usar
 
-1. Copie a URL HTTPS retornada pelo Wrangler.
+1. Copie a URL HTTPS do Worker publicado.
 2. Abra `loader/constructor.user.js` e preencha `WORKER_URL = ""` com essa URL, sem caminho adicional.
 3. Instale o arquivo no Tampermonkey. Autorize a conexão com seu Worker quando solicitado.
 4. Recarregue o jogo. O loader começa em `document-start`, antes da conexão WebSocket.
 5. Use apenas uma versão do Constructor por página.
 
-Após atualizar as fontes, repita a preparação e publicação. O build deixa `WORKER_URL` vazio; configure a cópia de instalação depois de gerá-la.
+Atualizações de `src/`, `furnis/` e `assets/` são carregadas do GitHub ao reabrir o jogo, sujeitas ao cache de cinco minutos. Se `worker/worker.js` mudar, cole novamente no painel e publique. O arquivo instalável é `loader/constructor.user.js`; `bootstrap.js` é apenas sua fonte de manutenção.
