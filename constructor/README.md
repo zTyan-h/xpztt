@@ -19,8 +19,7 @@ xpztt/
     │   └── styles/
     ├── furnis/             FurnitureData de cada hotel
     ├── assets/             Fontes e licenças
-    ├── scripts/            Preparação dos arquivos
-    └── tests/
+    └── scripts/            Preparação dos arquivos
 ```
 
 ## Requisitos
