@@ -1,0 +1,171 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "constructor": {
+      "v1": {
+        "clocks": {
+          "$uid": {
+            ".read": "auth != null && auth.uid === $uid",
+            ".write": "auth != null && auth.uid === $uid",
+            ".validate": "newData.isNumber() && newData.val() === now"
+          }
+        },
+        "invites": {
+          "$code": {
+            ".read": "auth != null && data.exists() && data.child('expiresAt').val() > now && (!data.child('guestUid').exists() || data.child('hostUid').val() === auth.uid || data.child('guestUid').val() === auth.uid)",
+            ".write": "auth != null && $code.matches(/^[a-f0-9]{32}$/) && ((!data.exists() && newData.exists() && newData.child('hostUid').val() === auth.uid && !newData.child('guestUid').exists()) || (!newData.exists() && (data.child('hostUid').val() === auth.uid || data.child('guestUid').val() === auth.uid || (auth != null && root.child('constructor/v1/links/' + $code).exists() && (root.child('constructor/v1/links/' + $code).child('hostUid').val() === auth.uid || root.child('constructor/v1/links/' + $code).child('guestUid').val() === auth.uid)))) || (data.exists() && newData.exists() && data.child('expiresAt').val() > now && newData.child('guestUid').val() === auth.uid && (!data.child('guestUid').exists() || data.child('guestUid').val() === auth.uid)))",
+            ".validate": "newData.hasChildren(['hostUid','hostHotel','createdAt','expiresAt']) && (newData.hasChild('guestUid') === newData.hasChild('guestHotel')) && (!newData.hasChild('guestUid') || (newData.child('guestUid').val() !== newData.child('hostUid').val() && newData.child('guestHotel').val() !== newData.child('hostHotel').val())) && (!data.exists() || (newData.child('hostUid').val() === data.child('hostUid').val() && newData.child('hostHotel').val() === data.child('hostHotel').val() && newData.child('createdAt').val() === data.child('createdAt').val() && newData.child('expiresAt').val() === data.child('expiresAt').val()))",
+            "hostUid": {
+              ".validate": "newData.isString() && newData.val().matches(/^[a-zA-Z0-9_-]{8,128}$/)"
+            },
+            "guestUid": {
+              ".validate": "newData.isString() && newData.val().matches(/^[a-zA-Z0-9_-]{8,128}$/)"
+            },
+            "hostHotel": {
+              ".validate": "newData.isString() && (newData.val() === 'habblive' || newData.val() === 'habblet')"
+            },
+            "guestHotel": {
+              ".validate": "newData.isString() && (newData.val() === 'habblive' || newData.val() === 'habblet')"
+            },
+            "createdAt": {
+              ".validate": "newData.isNumber() && newData.val() <= now && (data.exists() || newData.val() >= now - 300000)"
+            },
+            "expiresAt": {
+              ".validate": "newData.isNumber() && newData.val() > now && newData.val() <= now + 300000"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "links": {
+          "$code": {
+            ".read": "(auth != null && data.exists() && (data.child('hostUid').val() === auth.uid || data.child('guestUid').val() === auth.uid)) || (auth != null && !data.exists() && (root.child('constructor/v1/invites/' + $code).child('hostUid').val() === auth.uid || root.child('constructor/v1/invites/' + $code).child('guestUid').val() === auth.uid))",
+            ".write": "auth != null && $code.matches(/^[a-f0-9]{32}$/) && ((!data.exists() && newData.exists() && root.child('constructor/v1/invites/' + $code).child('hostUid').val() === auth.uid && root.child('constructor/v1/invites/' + $code).child('expiresAt').val() > now && newData.child('revoked').val() === false && newData.child('hostUid').val() === root.child('constructor/v1/invites/' + $code).child('hostUid').val() && newData.child('guestUid').val() === root.child('constructor/v1/invites/' + $code).child('guestUid').val() && newData.child('hostHotel').val() === root.child('constructor/v1/invites/' + $code).child('hostHotel').val() && newData.child('guestHotel').val() === root.child('constructor/v1/invites/' + $code).child('guestHotel').val() && newData.child('createdAt').val() === root.child('constructor/v1/invites/' + $code).child('createdAt').val()) || (data.exists() && newData.exists() && (auth != null && data.exists() && (data.child('hostUid').val() === auth.uid || data.child('guestUid').val() === auth.uid))))",
+            ".validate": "newData.hasChildren(['hostUid','guestUid','hostHotel','guestHotel','createdAt','revoked']) && newData.child('hostUid').val() !== newData.child('guestUid').val() && newData.child('hostHotel').val() !== newData.child('guestHotel').val() && (!data.exists() || (newData.child('hostUid').val() === data.child('hostUid').val() && newData.child('guestUid').val() === data.child('guestUid').val() && newData.child('hostHotel').val() === data.child('hostHotel').val() && newData.child('guestHotel').val() === data.child('guestHotel').val() && newData.child('createdAt').val() === data.child('createdAt').val() && (data.child('revoked').val() === false || newData.child('revoked').val() === true)))",
+            "hostUid": {
+              ".validate": "newData.isString() && newData.val().matches(/^[a-zA-Z0-9_-]{8,128}$/)"
+            },
+            "guestUid": {
+              ".validate": "newData.isString() && newData.val().matches(/^[a-zA-Z0-9_-]{8,128}$/)"
+            },
+            "hostHotel": {
+              ".validate": "newData.isString() && (newData.val() === 'habblive' || newData.val() === 'habblet')"
+            },
+            "guestHotel": {
+              ".validate": "newData.isString() && (newData.val() === 'habblive' || newData.val() === 'habblet')"
+            },
+            "createdAt": {
+              ".validate": "newData.isNumber() && newData.val() <= now"
+            },
+            "revoked": {
+              ".validate": "newData.isBoolean()"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "queues": {
+          "$link": {
+            ".write": "((auth != null && root.child('constructor/v1/links/' + $link).exists() && (root.child('constructor/v1/links/' + $link).child('hostUid').val() === auth.uid || root.child('constructor/v1/links/' + $link).child('guestUid').val() === auth.uid)) && root.child('constructor/v1/links/' + $link).child('revoked').val() === false) && !newData.exists() && newData.parent().parent().child('links/' + $link + '/revoked').val() === true",
+            "$uid": {
+              ".indexOn": [
+                "expiresAt"
+              ],
+              ".read": "((auth != null && root.child('constructor/v1/links/' + $link).exists() && (root.child('constructor/v1/links/' + $link).child('hostUid').val() === auth.uid || root.child('constructor/v1/links/' + $link).child('guestUid').val() === auth.uid)) && root.child('constructor/v1/links/' + $link).child('revoked').val() === false) && ($uid === root.child('constructor/v1/links/' + $link).child('hostUid').val() || $uid === root.child('constructor/v1/links/' + $link).child('guestUid').val()) && query.orderByChild === 'expiresAt' && query.limitToFirst > 0 && query.limitToFirst <= 25",
+              "$id": {
+                ".validate": "$id.matches(/^[a-zA-Z0-9_-]{8,160}$/) && newData.hasChildren([\"senderUid\",\"sourceHotel\",\"targetHotel\",\"revision\",\"hash\",\"expiresAt\"]) && newData.child('senderUid').val() === auth.uid && newData.child('sourceHotel').val() === (root.child('constructor/v1/links/' + $link).child('hostUid').val() === auth.uid ? root.child('constructor/v1/links/' + $link).child('hostHotel').val() : root.child('constructor/v1/links/' + $link).child('guestHotel').val()) && newData.child('targetHotel').val() === (root.child('constructor/v1/links/' + $link).child('hostUid').val() === $uid ? root.child('constructor/v1/links/' + $link).child('hostHotel').val() : root.child('constructor/v1/links/' + $link).child('guestHotel').val())",
+                "senderUid": {
+                  ".validate": "newData.isString() && newData.val().matches(/^[a-zA-Z0-9_-]{8,128}$/)"
+                },
+                "sourceHotel": {
+                  ".validate": "newData.isString() && (newData.val() === 'habblive' || newData.val() === 'habblet')"
+                },
+                "targetHotel": {
+                  ".validate": "newData.isString() && (newData.val() === 'habblive' || newData.val() === 'habblet')"
+                },
+                "revision": {
+                  ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 9007199254740991 && newData.val() % 1 === 0"
+                },
+                "hash": {
+                  ".validate": "newData.isString() && newData.val().matches(/^[a-f0-9]{64}$/)"
+                },
+                "expiresAt": {
+                  ".validate": "newData.isNumber() && newData.val() > now && newData.val() <= now + 900000"
+                },
+                "$other": {
+                  ".validate": false
+                },
+                ".read": "((auth != null && root.child('constructor/v1/links/' + $link).exists() && (root.child('constructor/v1/links/' + $link).child('hostUid').val() === auth.uid || root.child('constructor/v1/links/' + $link).child('guestUid').val() === auth.uid)) && root.child('constructor/v1/links/' + $link).child('revoked').val() === false) && ($uid === root.child('constructor/v1/links/' + $link).child('hostUid').val() || $uid === root.child('constructor/v1/links/' + $link).child('guestUid').val())",
+                ".write": "((auth != null && root.child('constructor/v1/links/' + $link).exists() && (root.child('constructor/v1/links/' + $link).child('hostUid').val() === auth.uid || root.child('constructor/v1/links/' + $link).child('guestUid').val() === auth.uid)) && root.child('constructor/v1/links/' + $link).child('revoked').val() === false) && ($uid === root.child('constructor/v1/links/' + $link).child('hostUid').val() || $uid === root.child('constructor/v1/links/' + $link).child('guestUid').val()) && ((!newData.exists() && ((!data.exists() || data.child('expiresAt').val() <= now || (auth.uid === $uid && (root.child('constructor/v1/receipts/' + $link + '/' + $uid + '/' + $id).child('revision').val() === data.child('revision').val() && root.child('constructor/v1/receipts/' + $link + '/' + $uid + '/' + $id).child('hash').val() === data.child('hash').val()))) || !root.child('constructor/v1/payloads/' + $link + '/' + $uid + '/' + $id).exists())) || (newData.exists() && auth.uid !== $uid && (!data.exists() || newData.child('revision').val() > data.child('revision').val() || (newData.child('revision').val() === data.child('revision').val() && newData.child('hash').val() === data.child('hash').val()))))"
+              }
+            }
+          }
+        },
+        "payloads": {
+          "$link": {
+            ".write": "((auth != null && root.child('constructor/v1/links/' + $link).exists() && (root.child('constructor/v1/links/' + $link).child('hostUid').val() === auth.uid || root.child('constructor/v1/links/' + $link).child('guestUid').val() === auth.uid)) && root.child('constructor/v1/links/' + $link).child('revoked').val() === false) && !newData.exists() && newData.parent().parent().child('links/' + $link + '/revoked').val() === true",
+            "$uid": {
+              "$id": {
+                ".validate": "$id.matches(/^[a-zA-Z0-9_-]{8,160}$/) && newData.hasChildren([\"senderUid\",\"sourceHotel\",\"targetHotel\",\"revision\",\"hash\",\"expiresAt\"]) && newData.child('senderUid').val() === auth.uid && newData.child('sourceHotel').val() === (root.child('constructor/v1/links/' + $link).child('hostUid').val() === auth.uid ? root.child('constructor/v1/links/' + $link).child('hostHotel').val() : root.child('constructor/v1/links/' + $link).child('guestHotel').val()) && newData.child('targetHotel').val() === (root.child('constructor/v1/links/' + $link).child('hostUid').val() === $uid ? root.child('constructor/v1/links/' + $link).child('hostHotel').val() : root.child('constructor/v1/links/' + $link).child('guestHotel').val()) && newData.hasChild('body')",
+                "senderUid": {
+                  ".validate": "newData.isString() && newData.val().matches(/^[a-zA-Z0-9_-]{8,128}$/)"
+                },
+                "sourceHotel": {
+                  ".validate": "newData.isString() && (newData.val() === 'habblive' || newData.val() === 'habblet')"
+                },
+                "targetHotel": {
+                  ".validate": "newData.isString() && (newData.val() === 'habblive' || newData.val() === 'habblet')"
+                },
+                "revision": {
+                  ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 9007199254740991 && newData.val() % 1 === 0"
+                },
+                "hash": {
+                  ".validate": "newData.isString() && newData.val().matches(/^[a-f0-9]{64}$/)"
+                },
+                "expiresAt": {
+                  ".validate": "newData.isNumber() && newData.val() > now && newData.val() <= now + 900000"
+                },
+                "$other": {
+                  ".validate": false
+                },
+                ".read": "((auth != null && root.child('constructor/v1/links/' + $link).exists() && (root.child('constructor/v1/links/' + $link).child('hostUid').val() === auth.uid || root.child('constructor/v1/links/' + $link).child('guestUid').val() === auth.uid)) && root.child('constructor/v1/links/' + $link).child('revoked').val() === false) && ($uid === root.child('constructor/v1/links/' + $link).child('hostUid').val() || $uid === root.child('constructor/v1/links/' + $link).child('guestUid').val()) && auth.uid === $uid && (!data.exists() || data.child('expiresAt').val() > now)",
+                ".write": "((auth != null && root.child('constructor/v1/links/' + $link).exists() && (root.child('constructor/v1/links/' + $link).child('hostUid').val() === auth.uid || root.child('constructor/v1/links/' + $link).child('guestUid').val() === auth.uid)) && root.child('constructor/v1/links/' + $link).child('revoked').val() === false) && ($uid === root.child('constructor/v1/links/' + $link).child('hostUid').val() || $uid === root.child('constructor/v1/links/' + $link).child('guestUid').val()) && ((!newData.exists() && (!data.exists() || data.child('expiresAt').val() <= now || (auth.uid === $uid && (root.child('constructor/v1/receipts/' + $link + '/' + $uid + '/' + $id).child('revision').val() === data.child('revision').val() && root.child('constructor/v1/receipts/' + $link + '/' + $uid + '/' + $id).child('hash').val() === data.child('hash').val())))) || (newData.exists() && auth.uid !== $uid && (!data.exists() || newData.child('revision').val() > data.child('revision').val() || (newData.child('revision').val() === data.child('revision').val() && newData.child('hash').val() === data.child('hash').val()))))",
+                "body": {
+                  ".validate": "newData.isString() && newData.val().length <= 4194304"
+                }
+              }
+            }
+          }
+        },
+        "receipts": {
+          "$link": {
+            ".write": "((auth != null && root.child('constructor/v1/links/' + $link).exists() && (root.child('constructor/v1/links/' + $link).child('hostUid').val() === auth.uid || root.child('constructor/v1/links/' + $link).child('guestUid').val() === auth.uid)) && root.child('constructor/v1/links/' + $link).child('revoked').val() === false) && !newData.exists() && newData.parent().parent().child('links/' + $link + '/revoked').val() === true",
+            "$uid": {
+              ".indexOn": [
+                "revision"
+              ],
+              ".read": "((auth != null && root.child('constructor/v1/links/' + $link).exists() && (root.child('constructor/v1/links/' + $link).child('hostUid').val() === auth.uid || root.child('constructor/v1/links/' + $link).child('guestUid').val() === auth.uid)) && root.child('constructor/v1/links/' + $link).child('revoked').val() === false) && ($uid === root.child('constructor/v1/links/' + $link).child('hostUid').val() || $uid === root.child('constructor/v1/links/' + $link).child('guestUid').val()) && auth.uid === $uid && query.orderByChild === 'revision' && query.limitToFirst > 0 && query.limitToFirst <= 25",
+              "$id": {
+                ".read": "((auth != null && root.child('constructor/v1/links/' + $link).exists() && (root.child('constructor/v1/links/' + $link).child('hostUid').val() === auth.uid || root.child('constructor/v1/links/' + $link).child('guestUid').val() === auth.uid)) && root.child('constructor/v1/links/' + $link).child('revoked').val() === false) && ($uid === root.child('constructor/v1/links/' + $link).child('hostUid').val() || $uid === root.child('constructor/v1/links/' + $link).child('guestUid').val()) && auth.uid === $uid",
+                ".write": "((auth != null && root.child('constructor/v1/links/' + $link).exists() && (root.child('constructor/v1/links/' + $link).child('hostUid').val() === auth.uid || root.child('constructor/v1/links/' + $link).child('guestUid').val() === auth.uid)) && root.child('constructor/v1/links/' + $link).child('revoked').val() === false) && ($uid === root.child('constructor/v1/links/' + $link).child('hostUid').val() || $uid === root.child('constructor/v1/links/' + $link).child('guestUid').val()) && auth.uid === $uid",
+                ".validate": "$id.matches(/^[a-zA-Z0-9_-]{8,160}$/) && newData.hasChildren(['revision','hash']) && newData.child('revision').val() === root.child('constructor/v1/payloads/' + $link + '/' + $uid + '/' + $id).child('revision').val() && newData.child('hash').val() === root.child('constructor/v1/payloads/' + $link + '/' + $uid + '/' + $id).child('hash').val()",
+                "revision": {
+                  ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 9007199254740991 && newData.val() % 1 === 0"
+                },
+                "hash": {
+                  ".validate": "newData.isString() && newData.val().matches(/^[a-f0-9]{64}$/)"
+                },
+                "$other": {
+                  ".validate": false
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

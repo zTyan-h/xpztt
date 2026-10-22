@@ -1,0 +1,15 @@
+{
+  "name": "constructor-standalone",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-21",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "vars": {
+    "FIREBASE_PROJECT_ID": "constructor-v1",
+    "FIREBASE_API_KEY": "AIzaSyBpzVYZiUSPbHzAfFLvoQxB07t4TzeVjI0",
+    "FIREBASE_DATABASE_URL": "https://constructor-v1-default-rtdb.firebaseio.com"
+  }
+}
