@@ -3,18 +3,24 @@
 ## Hierarquia
 
 ```text
-loader/constructor.user.js   Userscript instalável no Tampermonkey
-loader/bootstrap.js         Fonte do loader; transporte incorporado pelo build
-worker/worker.js             Recursos estáticos e comunicação Firebase
-worker/wrangler.jsonc        Configuração do Worker e do Firebase
-worker/firebase/             Regras e instruções do Firebase
-src/shell.js                Inicialização e mapa de carregamento
-src/core|hotels|modules/     Runtime, protocolos e funcionalidades
-src/services|ui|styles/      Comunicação, armazenamento e interface
-furnis/                     FurnitureData de cada hotel
-assets/fonts/constructor/   Fontes locais e licenças
-scripts/                    Preparação do loader e dos recursos públicos
-tests/                      Verificações locais sem compras reais
+xpztt/
+├── packet/                 Módulo existente
+└── constructor/
+    ├── README.md
+    ├── loader/             Userscript e fonte do loader
+    ├── worker/             Worker, configuração e firebase/
+    ├── src/
+    │   ├── shell.js        Entrada e mapa de carregamento
+    │   ├── core/
+    │   ├── hotels/
+    │   ├── modules/
+    │   ├── services/
+    │   ├── ui/
+    │   └── styles/
+    ├── furnis/             FurnitureData de cada hotel
+    ├── assets/             Fontes e licenças
+    ├── scripts/            Preparação dos arquivos
+    └── tests/
 ```
 
 ## Requisitos
@@ -25,9 +31,10 @@ tests/                      Verificações locais sem compras reais
 
 ## Disponibilizar o Worker
 
-Na pasta principal do projeto:
+Na raiz do repositório:
 
 ```sh
+cd constructor
 node scripts/build-loader.cjs
 node scripts/prepare-worker.cjs
 cd worker
