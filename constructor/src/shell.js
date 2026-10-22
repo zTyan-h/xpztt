@@ -6,10 +6,10 @@
   const bridge = window._constructorBridge;
   if (!bridge?.loadModule || bridge.socket?.version !== 1) {
     bridge?.toast?.('Recarregue a página com o loader do Constructor instalado.', 'error');
-    console.error('[Constructor] Ponte de transporte incompatível. Recarregue o Sang Hub.');
+    console.error('[Constructor] Ponte de transporte incompatível. Recarregue a página com o loader do Constructor.');
     return;
   }
-  const VERSION = '1.0.0';
+  const VERSION = '1.0.1';
   const sources = Object.freeze({
     'protocol-habblive': 'src/hotels/protocol-habblive.js',
     'protocol-habblet': 'src/hotels/protocol-habblet.js',
@@ -48,17 +48,18 @@
         if (name !== 'constructor') Object.defineProperty(ctx.Runtime.prototype, name, Object.getOwnPropertyDescriptor(prototype, name));
       }
     },
-    kill() {
+    kill(reason='user') {
       if (ctx.stopped) return;
       ctx.stopped = true;
       ctx.ac.abort();
       ctx.ui?.dispose();
       ctx.runtime?.dispose();
       ctx.disposeFonts?.();
+      bridge.release();
+      if(window._constructorBridge===bridge)delete window._constructorBridge;
       if (window._constructor === ctx) {
         delete window._constructor;
-        bridge.release();
-        window.dispatchEvent(new CustomEvent('constructor:close'));
+        window.dispatchEvent(new CustomEvent('constructor:close',{detail:{bridge,reason}}));
       }
     }
   };
@@ -108,7 +109,7 @@
       void ctx.loadFonts();
       ctx.mount(ctx.runtime);
     } catch (error) {
-      ctx.kill();
+      ctx.kill('error');
       if (error.name !== 'AbortError') {
         console.error('[Constructor] Não foi possível abrir o módulo:', error);
         bridge.toast?.('Constructor: ' + error.message, 'error');

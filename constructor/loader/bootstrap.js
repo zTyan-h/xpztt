@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Constructor
 // @namespace    https://github.com/zTyan-h/xpztt
-// @version      1.0.0
+// @version      1.0.1
 // @description  Constructor standalone para Habblive e Habblet
 // @match        https://*.habblive.in/*
 // @match        https://*.habblet.city/*
@@ -22,8 +22,26 @@
   // Captura incorporada pelo build: instalada antes de qualquer requisição.
 /*__TRANSPORT__*/
   const core = installConstructorSocketTransport(page);
-  const state = {busy:false, generation:0, bridge:null, control:null, message:'', readyObserver:null};
-  page.__constructorLoader = Object.freeze({open:boot,close:()=>page._constructor?.kill?.()});
+  const state = {busy:false, generation:0, bridge:null, control:null, message:'', readyObserver:null, inGame:false, wantsOpen:true};
+  page.__constructorLoader = Object.freeze({open,close});
+  function open(){state.wantsOpen=true;return boot();}
+  function releaseBridge(bridge,reason){
+    if(!bridge)return;
+    if(page._constructor?.platform===bridge)page._constructor.kill(reason);
+    bridge.release();
+    if(page._constructorBridge===bridge)delete page._constructorBridge;
+  }
+  function stop(reason){
+    state.generation++;state.busy=false;
+    const bridge=state.bridge;state.bridge=null;
+    releaseBridge(bridge,reason);
+    state.readyObserver?.disconnect();state.readyObserver=null;
+    if(state.control)state.control.hidden=true;
+  }
+  function close(){
+    state.wantsOpen=false;stop('user');
+    if(gameRoute())feedback('Constructor encerrado. Clique para abrir.');
+  }
   function gameRoute(){return /(?:^|\.)habblet\.city$/i.test(page.location.hostname)?/^\/hotel(?:\/|$)/.test(page.location.pathname):page.location.pathname.startsWith('/bigclient');}
   function feedback(message){
     state.message=message;page.console.info('[Constructor]',message);
@@ -32,7 +50,7 @@
       if(!state.control){
         state.control=document.createElement('button');state.control.type='button';state.control.id='constructor-loader';
         state.control.style.cssText='position:fixed;right:16px;bottom:16px;max-width:360px;padding:12px 16px;background:#18242c;color:white;border:1px solid #f57b43;border-radius:10px;z-index:2147483647;font:13px sans-serif;cursor:pointer';
-        state.control.onclick=()=>void boot();document.documentElement.appendChild(state.control);
+        state.control.onclick=()=>void open();document.documentElement.appendChild(state.control);
       }
       state.control.textContent=state.message;state.control.hidden=!gameRoute();
     };
@@ -107,15 +125,16 @@
       let script;
       try{script=await GM_addElement(document.head||document.documentElement,'script',{textContent:source+'\n//# sourceURL='+sourceName+'\n'});}
       finally{script?.remove();page.removeEventListener('error',onError);}
+      check();if(signal?.aborted)throw signal.reason;
       if(failure)throw failure;
     }
-    return Object.freeze({baseUrl,socket,request,assetUrl,loadModule,toast:feedback,
+    return Object.freeze({baseUrl,socket,request,assetUrl,loadModule,toast(message){if(!closed)feedback(message);},
       release(){if(closed)return;closed=true;life.abort();socket.release();}});
   }
   async function boot(){
     if(!gameRoute())return;
-    if(page._constructor?.current?.()){page._constructor.show();return;}
     if(state.busy)return;
+    if(page._constructor?.current?.()){page._constructor.show();return;}
     state.busy=true;const generation=++state.generation;
     let bridge;
     try{
@@ -131,24 +150,33 @@
       if(generation!==state.generation)return;
       if(state.control)state.control.hidden=true;
     }catch(error){
-      bridge?.release();
-      if(generation===state.generation)feedback('Constructor: '+error.message+' Clique para tentar novamente.');
+      if(generation===state.generation){
+        state.bridge=null;releaseBridge(bridge,'error');
+        feedback('Constructor: '+error.message+' Clique para tentar novamente.');
+      }else bridge?.release();
     }finally{if(generation===state.generation)state.busy=false;}
   }
   function syncRoute(){
-    if(gameRoute()){void boot();return;}
-    state.generation++;state.busy=false;page._constructor?.kill?.();state.bridge?.release();if(state.control)state.control.hidden=true;
+    const active=gameRoute();
+    if(active===state.inGame)return;
+    state.inGame=active;
+    if(!active){stop('route');return;}
+    if(state.wantsOpen)void boot();
+    else feedback('Constructor encerrado. Clique para abrir.');
   }
   for(const name of ['pushState','replaceState']){
     const original=page.history[name];
     try{page.history[name]=function(...args){const result=original.apply(this,args);syncRoute();return result;};}catch{/* popstate/pageshow continuam disponíveis. */}
   }
   for(const event of ['popstate','hashchange','pageshow'])page.addEventListener(event,syncRoute);
-  page.addEventListener('pagehide',()=>{state.generation++;state.busy=false;page._constructor?.kill?.();state.bridge?.release();});
-  page.addEventListener('constructor:close',()=>{if(gameRoute())feedback('Constructor encerrado. Clique para abrir.');});
+  page.addEventListener('pagehide',()=>{state.inGame=false;stop('pagehide');});
+  page.addEventListener('constructor:close',event=>{
+    if(event.detail?.bridge!==state.bridge||event.detail?.reason!=='user')return;
+    close();
+  });
   if(typeof GM_registerMenuCommand==='function'){
-    GM_registerMenuCommand('Abrir Constructor',()=>void boot());
-    GM_registerMenuCommand('Encerrar Constructor',()=>page._constructor?.kill?.());
+    GM_registerMenuCommand('Abrir Constructor',()=>void open());
+    GM_registerMenuCommand('Encerrar Constructor',close);
   }
   syncRoute();
 })();

@@ -40,17 +40,18 @@ function fixture({configured=false,failOnce=false}={}){
    return element();
   }};
  context=vm.createContext(globals);
- vm.runInContext(configured?originalLoader.replace('const WORKER_URL = ""','const WORKER_URL = "https://constructor.invalid"'):originalLoader,context);
- return {env,context,calls,nodes,messages,executeAgain(){vm.runInContext(configured?originalLoader.replace('const WORKER_URL = ""','const WORKER_URL = "https://constructor.invalid"'):originalLoader,context);}};
+ const loader=configured?originalLoader.replace('const WORKER_URL = "[SEU WORKER]"','const WORKER_URL = "https://constructor.invalid"'):originalLoader;
+ vm.runInContext(loader,context);
+ return {env,context,calls,nodes,messages,executeAgain(){vm.runInContext(loader,context);}};
 }
 async function ready(f){for(let n=0;n<80;n++){if(f.env.mounted)return;await tick();}throw Error('Bootstrap não terminou.');}
-test('URL vazia não faz rede, informa configuração e captura WebSocket uma única vez',async()=>{
- const f=fixture();await tick();assert.equal(f.calls.length,0);assert.match(f.nodes.get('constructor-loader').textContent,/WORKER_URL/);
+test('URL não configurada não faz rede, informa configuração e captura WebSocket uma única vez',async()=>{
+ const f=fixture();await tick();assert.equal(f.calls.length,0);assert.match(f.nodes.get('constructor-loader').textContent,/SEU WORKER/);
  const Constructor=f.env.WebSocket;f.executeAgain();assert.equal(f.env.WebSocket,Constructor);
  const ws=new f.env.WebSocket('wss://game.habblet.city/');ws.open();const packet=new ArrayBuffer(6);new DataView(packet).setInt32(0,2);new DataView(packet).setUint16(4,7777);ws.receive(packet);await tick();assert.equal(f.env._constructorSocketTransport.acquire('test').getStatus().state,'OPEN');
 });
 test('Loader → shell → runtime real sem Hub, recursos via Worker e reabertura sem duplicar hooks',async()=>{
- const f=fixture({configured:true});await ready(f);assert.equal(f.env._hubBridge,undefined);assert.equal(f.env._constructor.version,'1.0.0');assert.equal(f.env._constructor.runtime.busy,false);
+ const f=fixture({configured:true});await ready(f);assert.equal(f.env._hubBridge,undefined);assert.equal(f.env._constructor.version,'1.0.1');assert.equal(f.env._constructor.runtime.busy,false);
  assert.equal(f.calls.filter(call=>new URL(call.url).pathname==='/load').length,22);assert.ok(f.calls.every(call=>new URL(call.url).origin==='https://constructor.invalid'));
  assert.equal(f.calls.some(call=>new URL(call.url).pathname.startsWith('/firebase/')),false);
  const data=await f.env._constructor.loadFurniture('habblet');assert.equal(data.floor.byId.has(13),true);
