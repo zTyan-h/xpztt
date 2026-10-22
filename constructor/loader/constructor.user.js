@@ -16,7 +16,7 @@
 
 (function () {
   'use strict';
-  const WORKER_URL = ""; // Preencha com a URL HTTPS do seu Worker.
+  const WORKER_URL = "[SEU WORKER]"; // Substitua pela URL HTTPS do seu Worker.
   const page = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
   if (page.__constructorLoader) return;
   // Captura incorporada pelo build: instalada antes de qualquer requisição.
@@ -401,7 +401,7 @@ function installConstructorSocketTransport(env) {
     else if(!state.readyObserver){state.readyObserver=new MutationObserver(()=>{if(document.documentElement)render();});state.readyObserver.observe(document,{childList:true});}
   }
   function configuredOrigin(){
-    if(!WORKER_URL.trim())throw Error('Constructor: preencha WORKER_URL no userscript e recarregue a página.');
+    if(!WORKER_URL.trim()||WORKER_URL.trim()==='[SEU WORKER]')throw Error('Constructor: substitua [SEU WORKER] pela URL HTTPS do seu Worker e recarregue a página.');
     const url=new URL(WORKER_URL);
     if(url.protocol!=='https:'||url.username||url.password||url.search||url.hash||url.pathname!=='/')throw Error('WORKER_URL deve conter somente a origem HTTPS do Worker.');
     return url.origin;

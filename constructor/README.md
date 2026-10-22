@@ -39,7 +39,7 @@ O Worker já aponta para o Firebase **constructor-v1** e carrega os arquivos pú
 ## Instalar e usar
 
 1. Copie a URL HTTPS do Worker publicado.
-2. Abra `loader/constructor.user.js` e preencha `WORKER_URL = ""` com essa URL, sem caminho adicional.
+2. Abra `loader/constructor.user.js` e substitua `[SEU WORKER]` em `WORKER_URL` por essa URL, sem caminho adicional.
 3. Instale o arquivo no Tampermonkey. Autorize a conexão com seu Worker quando solicitado.
 4. Recarregue o jogo. O loader começa em `document-start`, antes da conexão WebSocket.
 5. Use apenas uma versão do Constructor por página.
