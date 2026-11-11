@@ -20,6 +20,8 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_deleteValue
+// @updateURL    https://raw.githubusercontent.com/zTyan-h/xpztt/refs/heads/main/loader/loader.js
+// @downloadURL  https://raw.githubusercontent.com/zTyan-h/xpztt/refs/heads/main/loader/loader.js
 // ==/UserScript==
 
 (function () {
