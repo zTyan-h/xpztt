@@ -1,0 +1,12 @@
+{
+  "pet.types": [],
+  "furnidata.url": "/assets/FurnitureData.json",
+  "generic.asset.url": "/assets/generic/%libname%.nitro",
+  "furni.asset.url": "/assets/packages/%libname%.nitro",
+  "system.log.debug": false,
+  "system.log.warn": false,
+  "system.log.error": true,
+  "room.landscapes.enabled": false
+}
+
+
