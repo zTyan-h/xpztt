@@ -1,0 +1,4 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {searchCatalog} from '../src/catalog.js';
+const entries=[{key:'floor:1',type:'floor',name:'Coração',classname:'heart',description:'Raro',typeId:1,available:true,wired:false,colorable:true},{key:'wall:1',type:'wall',name:'Wired parede',classname:'wf_wall',description:'',typeId:1,available:false,wired:true,colorable:false}];
+test('search ignores accents and filters availability/type independently',()=>{assert.equal(searchCatalog(entries,{query:'coracao'}).length,1);assert.equal(searchCatalog(entries,{query:'wf_wall',available:true}).length,0);assert.equal(searchCatalog(entries,{type:'wall',view:'wired'}).length,1);});
+test('favorites and recents use stable catalog keys',()=>{assert.equal(searchCatalog(entries,{view:'favorites',favorites:['wall:1']})[0].key,'wall:1');assert.equal(searchCatalog(entries,{view:'recent',recent:['wall:1','floor:1']})[0].key,'wall:1');});
