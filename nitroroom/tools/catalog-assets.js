@@ -1,11 +1,35 @@
-import { createHash } from 'node:crypto';
-import { createReadStream, readdirSync, readFileSync, statSync, mkdirSync, writeFileSync, renameSync, copyFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream, readdirSync, readFileSync, statSync, mkdirSync, writeFileSync, renameSync, copyFileSync, rmSync } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
-import { inflateSync, deflateSync } from 'node:zlib';
+import { inflateSync, deflateSync, gzip } from 'node:zlib';
+import { promisify } from 'node:util';
 
 const MAX_BUNDLE = 64 * 1024 * 1024;
 const MAX_JSON = 32 * 1024 * 1024;
 const digest = value => createHash('sha256').update(value).digest('hex');
+const gzipAsync = promisify(gzip);
+const MAX_NORMALIZED_BYTES = 32 * 1024 * 1024;
+
+function acceptsGzip(header = '') {
+  const encodings = new Map(header.split(',').map(value => {
+    const [name, ...parameters] = value.trim().toLowerCase().split(';');
+    const weight = parameters.map(part => part.trim()).find(part => part.startsWith('q='));
+    return [name.trim(), weight === undefined ? 1 : Number(weight.slice(2))];
+  }));
+  return (encodings.get('gzip') ?? encodings.get('*') ?? 0) > 0;
+}
+
+function notModified(request, response, tag) {
+  response.setHeader('ETag', tag);
+  const matches = request.headers['if-none-match']?.split(',').some(value => {
+    const candidate = value.trim();
+    return candidate === '*' || candidate.replace(/^W\//, '') === tag;
+  });
+  if (!matches) return false;
+  response.statusCode = 304;
+  response.end();
+  return true;
+}
 
 export function buildCatalog(data, packages, revision) {
   const names = new Set(packages);
@@ -118,50 +142,88 @@ export function createCatalogService(root) {
   const packagesPath = join(assets, 'packages');
   const metadataPath = join(assets, 'FurnitureData.json');
   const indexPath = join(root, '.local/catalog-index.json');
-  let current;
-  let checked = 0;
+  let current, serialized, compressed, metadataStamp, directoryStamp;
+  let packageNames = [];
+  let checked = 0, cacheBytes = 0, warned = false;
   const infos = new Map();
+  const normalized = new Map();
   function index() {
     if (current && Date.now() - checked < 2000) return current;
-    checked = Date.now();
-    const packages = readdirSync(packagesPath, { withFileTypes: true }).filter(file => file.isFile() && file.name.endsWith('.nitro')).map(file => file.name.slice(0, -6)).sort();
     const metadata = statSync(metadataPath);
-    const packageStat = statSync(packagesPath);
-    const revision = digest(`5:${metadata.mtimeMs}:${metadata.size}:${packageStat.mtimeMs}:${packages.join('\n')}`);
-    if (current?.revision === revision) return current;
+    const packageStat = statSync(packagesPath, { throwIfNoEntry: false });
+    const nextMetadata = `${metadata.mtimeMs}:${metadata.size}:${metadata.ctimeMs}`;
+    const nextDirectory = packageStat ? `${packageStat.mtimeMs}:${packageStat.ctimeMs}` : null;
+    if (current && nextMetadata === metadataStamp && nextDirectory === directoryStamp) {
+      checked = Date.now();
+      return current;
+    }
+    const packages = nextDirectory === directoryStamp ? packageNames : packageStat
+      ? readdirSync(packagesPath, { withFileTypes: true }).filter(file => file.isFile() && file.name.endsWith('.nitro')).map(file => file.name.slice(0, -6)).sort()
+      : [];
+    const revision = digest(`6:${nextMetadata}:${nextDirectory}:${packages.join('\n')}`);
     let saved;
     try { saved = JSON.parse(readFileSync(indexPath, 'utf8')); } catch { /* Primeiro uso ou cache inválido. */ }
     current = saved?.version === 1 && saved.revision === revision && Array.isArray(saved.entries) && Array.isArray(saved.orphanPackages) ? saved : buildCatalog(JSON.parse(readFileSync(metadataPath, 'utf8')), packages, revision);
     current.names = new Set(packages);
+    current.orphans = new Set(current.orphanPackages);
+    metadataStamp = nextMetadata; directoryStamp = nextDirectory; packageNames = packages;
+    checked = Date.now();
+    serialized = compressed = undefined;
     if (current !== saved) {
-      mkdirSync(dirname(indexPath), { recursive: true });
-      writeFileSync(`${indexPath}.tmp`, JSON.stringify({ version: current.version, revision, entries: current.entries, orphanPackages: current.orphanPackages }));
-      renameSync(`${indexPath}.tmp`, indexPath);
+      const temporary = `${indexPath}.${randomUUID()}.tmp`;
+      try {
+        mkdirSync(dirname(indexPath), { recursive: true });
+        writeFileSync(temporary, JSON.stringify({ version: current.version, revision, entries: current.entries, orphanPackages: current.orphanPackages }));
+        renameSync(temporary, indexPath);
+      } catch (error) {
+        try { rmSync(temporary, { force: true }); } catch { /* O índice em memória continua válido. */ }
+        if (!warned) console.warn('Não foi possível gravar o cache do catálogo:', error.message);
+        warned = true;
+      }
     }
     infos.clear();
     return current;
   }
-  function info(name) {
+  function describe(name) {
     const catalog = index();
     safePackageName(name, catalog.names);
     const path = join(packagesPath, `${name}.nitro`);
     const stat = statSync(path);
     if (!stat.isFile() || stat.size > MAX_BUNDLE) throw new Error('Tamanho de bundle inválido.');
-    const revision = digest(`${catalog.revision}:${name}:${stat.mtimeMs}:${stat.size}`);
+    const revision = digest(`asset-v2:${name}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`);
+    return { name, path, size: stat.size, revision, orphan: catalog.orphans.has(name) };
+  }
+  function bodyFor({ name, path, revision, orphan }, wantBundle = false) {
     const cached = infos.get(name);
-    if (cached?.revision === revision) return cached;
-    const parsed = parseBundle(readFileSync(path));
-    const result = bundleInfo(parsed.json, revision);
+    const details = cached?.revision === revision ? cached : undefined;
+    const hit = normalized.get(revision);
+    if (details && (!wantBundle || !details.recolorable || hit)) {
+      if (hit) { normalized.delete(revision); normalized.set(revision, hit); }
+      return { details, body: hit };
+    }
+    const buffer = readFileSync(path);
+    const parsed = parseBundle(buffer);
+    const result = details ?? bundleInfo(parsed.json, revision);
     result.recolorable = parsed.json.logicType === 'furniture_recolorable' || parsed.json.visualizationType === 'furniture_recolorable';
-    const orphan = catalog.orphanPackages?.includes(name);
     if (orphan) result.diagnostic = /wall|poster|stickie/i.test(`${result.logicType} ${result.visualizationType}`)
       ? 'Pacote sem metadados aparenta ser de parede; catálogo usa piso por padrão.'
       : 'Pacote sem metadados: tipo de piso e dimensões 1×1 presumidos; verificar compatibilidade antes de inserir.';
     if (infos.size >= 512) infos.delete(infos.keys().next().value);
     infos.set(name, result);
-    return result;
+    const body = result.recolorable ? hit ?? normalizeBundle(buffer, parsed) : undefined;
+    if (body && !hit && body.length <= MAX_NORMALIZED_BYTES) {
+      while (normalized.size >= 64 || cacheBytes + body.length > MAX_NORMALIZED_BYTES) {
+        const oldest = normalized.keys().next().value;
+        cacheBytes -= normalized.get(oldest).length;
+        normalized.delete(oldest);
+      }
+      normalized.set(revision, body);
+      cacheBytes += body.length;
+    }
+    return { details: result, body };
   }
-  function middleware(request, response, next) {
+  const info = name => bodyFor(describe(name)).details;
+  async function middleware(request, response, next) {
     const raw = (request.url || '').split('?')[0];
     if (raw !== '/catalog.json' && !raw.startsWith('/catalog/info/') && !raw.startsWith('/assets/packages/')) return next();
     if (request.method !== 'GET' && request.method !== 'HEAD') { response.statusCode = 405; response.end(); return; }
@@ -169,34 +231,44 @@ export function createCatalogService(root) {
       response.setHeader('Cache-Control', 'no-cache');
       if (raw === '/catalog.json') {
         const catalog = index();
+        const zipped = acceptsGzip(request.headers['accept-encoding']);
+        response.setHeader('Vary', 'Accept-Encoding');
+        if (notModified(request, response, `"${catalog.revision}-${zipped ? 'gzip' : 'json'}"`)) return;
+        serialized ??= Buffer.from(JSON.stringify({ version: catalog.version, revision: catalog.revision, entries: catalog.entries }));
+        const body = zipped ? await (compressed ??= gzipAsync(serialized).catch(error => {
+          if (current === catalog) compressed = undefined;
+          throw error;
+        })) : serialized;
         response.setHeader('Content-Type', 'application/json; charset=utf-8');
-        response.end(request.method === 'HEAD' ? undefined : JSON.stringify({ version: catalog.version, revision: catalog.revision, entries: catalog.entries }));
+        if (zipped) response.setHeader('Content-Encoding', 'gzip');
+        response.setHeader('Content-Length', body.length);
+        response.end(request.method === 'HEAD' ? undefined : body);
         return;
       }
       const isInfo = raw.startsWith('/catalog/info/');
       const encoded = raw.slice(isInfo ? '/catalog/info/'.length : '/assets/packages/'.length);
       const decoded = decodeURIComponent(encoded);
       if (!isInfo && !decoded.endsWith('.nitro')) throw new Error('Extensão inválida.');
-      const name = safePackageName(isInfo ? decoded : decoded.slice(0, -6), index().names);
-      const details = info(name);
+      const asset = describe(isInfo ? decoded : decoded.slice(0, -6));
+      if (notModified(request, response, `"${asset.revision}-${isInfo ? `info-${Number(asset.orphan)}` : 'nitro'}"`)) return;
+      const { details, body: normalizedBody } = bodyFor(asset, !isInfo);
       if (isInfo) {
         const { recolorable, ...body } = details;
         response.setHeader('Content-Type', 'application/json; charset=utf-8');
         response.end(request.method === 'HEAD' ? undefined : JSON.stringify(body));
       } else {
-        const path = join(packagesPath, `${name}.nitro`);
         response.setHeader('Content-Type', 'application/octet-stream');
-        if (details.recolorable) {
-          const body = normalizeBundle(readFileSync(path));
-          response.setHeader('Content-Length', body.length);
-          response.end(request.method === 'HEAD' ? undefined : body);
+        if (normalizedBody) {
+          response.setHeader('Content-Length', normalizedBody.length);
+          response.end(request.method === 'HEAD' ? undefined : normalizedBody);
         } else {
-          response.setHeader('Content-Length', statSync(path).size);
+          response.setHeader('Content-Length', asset.size);
           if (request.method === 'HEAD') response.end();
-          else createReadStream(path).on('error', () => response.destroy()).pipe(response);
+          else createReadStream(asset.path).on('error', () => response.destroy()).pipe(response);
         }
       }
     } catch (error) {
+      response.removeHeader('ETag');
       response.statusCode = error.code === 'ENOENT' || /Pacote inválido/.test(error.message) ? 404 : 422;
       response.setHeader('Content-Type', 'application/json; charset=utf-8');
       response.end(JSON.stringify({ error: error.message }));

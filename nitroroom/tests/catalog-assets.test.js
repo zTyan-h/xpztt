@@ -66,7 +66,7 @@ test('rejects malformed, oversized bundles and unsafe package names', () => {
 });
 
 test('service persists index, serves JSON and Nitro, and rejects traversals', async () => {
-  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = await import('node:fs');
+  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, rmdirSync, unlinkSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const { createServer } = await import('node:http');
@@ -81,7 +81,27 @@ test('service persists index, serves JSON and Nitro, and rejects traversals', as
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
-    const catalog = await (await fetch(`${base}/catalog.json`)).json();
+    const catalogResponse = await fetch(`${base}/catalog.json`, { headers: { 'Accept-Encoding': 'identity' } });
+    const catalog = await catalogResponse.json();
+    const gzip = await fetch(`${base}/catalog.json`, { headers: { 'Accept-Encoding': 'gzip' } });
+    assert.equal(gzip.headers.get('content-encoding'), 'gzip');
+    assert.match(gzip.headers.get('vary'), /Accept-Encoding/i);
+    assert.deepEqual(await gzip.json(), catalog);
+    const identity = await fetch(`${base}/catalog.json`, { headers: { 'Accept-Encoding': 'gzip;q=0, *;q=1' } });
+    assert.equal(identity.headers.get('content-encoding'), null);
+    assert.deepEqual(await identity.json(), catalog);
+    const catalogTag = catalogResponse.headers.get('etag');
+    assert.ok(catalogTag);
+    const validate = async (path, tag, status = 304) => {
+      const response = await fetch(base + path, { headers: { 'Accept-Encoding': 'identity', 'If-None-Match': tag } });
+      assert.equal(response.status, status);
+      if (status === 304) assert.equal(await response.text(), '');
+      return response;
+    };
+    await validate('/catalog.json', catalogTag);
+    const head = await fetch(`${base}/catalog.json`, { method: 'HEAD', headers: { 'Accept-Encoding': 'identity' } });
+    assert.equal(head.headers.get('etag'), catalogTag);
+    assert.equal(await head.text(), '');
     assert.equal(catalog.entries[0].key, 'floor:3');
     assert.equal(createCatalogService(root).index().revision, catalog.revision);
     assert.equal(JSON.parse(readFileSync(join(root, '.local/catalog-index.json'))).entries.length, 1);
@@ -89,12 +109,29 @@ test('service persists index, serves JSON and Nitro, and rejects traversals', as
     assert.equal(response.headers.get('content-type'), 'application/octet-stream');
     assert.equal(parseBundle(Buffer.from(await response.arrayBuffer())).json.logicType, 'furniture_guild_customized');
     assert.deepEqual(readFileSync(join(root, 'public/assets/packages/chair.nitro')), original);
-    const info = await (await fetch(`${base}/catalog/info/chair`)).json();
+    const infoResponse = await fetch(`${base}/catalog/info/chair`);
+    const info = await infoResponse.json();
     assert.equal(info.colorChannels, 1);
+    const infoTag = infoResponse.headers.get('etag');
+    const bundleTag = response.headers.get('etag');
+    assert.ok(infoTag && bundleTag);
+    await validate('/catalog/info/chair', infoTag);
+    await validate('/assets/packages/chair.nitro', bundleTag);
+    writeFileSync(join(root, 'public/assets/packages/chair.nitro'), bundle({ name: 'chair', logicType: 'furniture_basic' }));
+    const updated = await validate('/catalog/info/chair', infoTag, 200);
+    assert.notEqual(updated.headers.get('etag'), infoTag);
+    const changedBundle = await validate('/assets/packages/chair.nitro', bundleTag, 200);
+    assert.notEqual(changedBundle.headers.get('etag'), bundleTag);
     for (const path of ['/catalog/info/..%2Fchair', '/assets/packages/..%5Cchair.nitro', '/assets/packages/missing.nitro']) assert.equal((await fetch(`${base}${path}`)).status, 404);
     const before = catalog.revision;
     writeFileSync(join(root, 'public/assets/packages/extra.nitro'), original);
     assert.notEqual(createCatalogService(root).index().revision, before);
+    writeFileSync(join(root, 'public/assets/packages/chair.nitro'), Buffer.from('corrompido'));
+    assert.equal((await fetch(`${base}/catalog/info/chair`)).status, 422);
+    unlinkSync(join(root, 'public/assets/packages/chair.nitro'));
+    unlinkSync(join(root, 'public/assets/packages/extra.nitro'));
+    rmdirSync(join(root, 'public/assets/packages'));
+    assert.equal(createCatalogService(root).index().entries[0].available, false);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(root, { recursive: true, force: true });

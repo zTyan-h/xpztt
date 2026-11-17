@@ -1,9 +1,14 @@
-import { Point } from '@pixi/math';
+import { Point, Rectangle } from '@pixi/math';
+import { Graphics } from '@pixi/graphics';
+import { ColorMatrixFilter } from '@pixi/filter-color-matrix';
+import { WALL_HEIGHT_DEFAULT, WALL_HEIGHT_MIN } from './project.js';
+import { PHOTO_SIZE } from './photo-frame.js';
+import { createAssetQueue } from './asset-queue.js';
 import {
   FurnitureData, FurnitureDataLoader, FurnitureType, LegacyDataType, Nitro, NitroCore,
   NitroConfiguration, RoomContentLoadedEvent, RoomContentLoader,
-  RoomEngine, RoomEngineEvent, RoomObjectCategory, RoomObjectVariable, RoomPreviewer, SessionDataManager, Vector3d,
-  type IFurnitureData, type IFurnitureDataListener,
+  RoomEngine, RoomEngineEvent, RoomObjectCategory, RoomObjectSpriteVisualization, RoomObjectVariable, RoomPreviewer, SessionDataManager, TextureUtils, Vector3d,
+  type IFurnitureData, type IFurnitureDataListener, type IRoomObjectSprite,
 } from '@nitro';
 
 export interface CatalogEntry {
@@ -12,20 +17,31 @@ export interface CatalogEntry {
 }
 export interface AssetInfo {
   directions: number[]; states: number[]; colorChannels: 0 | 1 | 2;
-  visualizationType: string; logicType: string; revision: number;
+  visualizationType: string; logicType: string; revision: string;
 }
 export interface PreviewItem {
   id: number; key: string; x: number; y: number; z: number; direction: number; state: number; colors: string[];
   wall?: { side: 'left' | 'right'; position: number; height: number };
+  photo?: string;
 }
+type ItemError = { id: number; message: string };
 export interface NitroPreview {
-  dispose(): void; resize(): void; setModel(model: string): void;
+  dispose(): void; resize(): void; setModel(model: string, wallHeight: number): void;
+  panBy(dx: number, dy: number): void;
+  zoomBy(factor: number, clientX?: number, clientY?: number): number;
+  setZoom(scale: number): number;
+  fitAll(): void;
+  resetView(): void;
+  getZoom(): number;
+  capturePhoto(frame: { x: number; y: number }): { full: string; small: string };
   prepare(entry: CatalogEntry): Promise<AssetInfo>;
   thumbnail(entry: CatalogEntry): Promise<string>;
-  setItems(items: PreviewItem[], entries: Map<string, CatalogEntry>): Promise<{ errors: { id: number; message: string }[] }>;
+  setItems(items: PreviewItem[], entries: Map<string, CatalogEntry>, onErrors?: (errors: ItemError[]) => void): Promise<{ errors: ItemError[] }>;
   ghost(item: PreviewItem | null, entries: Map<string, CatalogEntry>): Promise<void>;
   hitTest(clientX: number, clientY: number): number | null;
-  getPlacement(clientX: number, clientY: number, type: 'floor' | 'wall'): Omit<PreviewItem, 'id' | 'key' | 'direction' | 'state' | 'colors'> | null;
+  selectItem(id: number | null): void;
+  getPlacement(clientX: number, clientY: number, type: 'floor' | 'wall', emptyFloorZ?: number): Omit<PreviewItem, 'id' | 'key' | 'direction' | 'state' | 'colors'> | null;
+  markArea(anchors: { x: number; y: number; z: number }[], width?: number, height?: number): void;
 }
 
 // The offline preview supplies real furniture metadata without starting hotel services.
@@ -48,7 +64,7 @@ class PreviewSessionData extends SessionDataManager {
 
 let mountedOnce = false;
 
-export async function mountNitroPreview(host: HTMLElement, config: Record<string, unknown>): Promise<NitroPreview> {
+export async function mountNitroPreview(host: HTMLElement, config: Record<string, unknown>, onZoom: (scale: number) => void, readPackageInfo: (name: string) => Promise<AssetInfo>): Promise<NitroPreview> {
   if (mountedOnce) throw new Error('Recarregue a página para reiniciar o renderer Nitro.');
   if (typeof config['furnidata.url'] !== 'string' || typeof config['generic.asset.url'] !== 'string') {
     throw new Error('Configure furnidata.url e generic.asset.url antes de abrir o preview.');
@@ -99,26 +115,28 @@ export async function mountNitroPreview(host: HTMLElement, config: Record<string
   canvas.setAttribute('aria-label', 'Prévia isométrica do quarto');
   canvas.setAttribute('role', 'img');
   host.appendChild(canvas);
+  let disposeSelection: (() => void) | undefined;
 
   let preview: RoomPreviewer | undefined;
   let disposed = false;
   let fitFrame = 0;
   let itemsVersion = 0;
   let ghostVersion = 0;
-  const requests = new Set<AbortController>();
+  const assetQueue = createAssetQueue(4);
   const pendingDownloads = new Set<() => void>();
   const dispose = () => {
     if (disposed) return;
     disposed = true;
     itemsVersion++;
     ghostVersion++;
-    for (const request of requests) request.abort();
+    assetQueue.dispose();
     for (const cancel of pendingDownloads) cancel();
     cancelAnimationFrame(fitFrame);
     preview?.dispose();
     if (preview) engine.removeRoomInstance(preview.roomId);
     // Engine's upstream dispose skips these when initialization has failed.
     application.ticker.remove(engine.update, engine);
+    disposeSelection?.();
     document.removeEventListener('visibilitychange', engine.runVisibilityUpdate);
     manager.events.removeAllListeners();
     engine.events.removeAllListeners();
@@ -166,7 +184,7 @@ export async function mountNitroPreview(host: HTMLElement, config: Record<string
     });
 
     preview = new RoomPreviewer(engine);
-    preview.backgroundColor = 0x1c2025;
+    preview.backgroundColor = 0x17191d;
     if (!engine.getRoomObject(preview.roomId, RoomEngine.ROOM_OBJECT_ID, RoomObjectCategory.ROOM) ||
         !engine.getRoomObject(preview.roomId, RoomEngine.CURSOR_OBJECT_ID, RoomObjectCategory.CURSOR)) {
       throw new Error('Os assets room.nitro e tile_cursor.nitro não criaram os objetos esperados.');
@@ -174,22 +192,78 @@ export async function mountNitroPreview(host: HTMLElement, config: Record<string
     const display = preview.getRoomCanvas(application.screen.width, application.screen.height);
     if (!display) throw new Error('O renderer não criou o canvas do quarto.');
     application.stage.addChild(display);
-    const fitRoom = () => {
-      if (disposed || !preview) return;
+    const areaOverlay = new Graphics();
+    application.stage.addChild(areaOverlay);
+    const MIN_ZOOM = 0.1;
+    const MAX_ZOOM = 4;
+    const roomId = () => preview!.roomId;
+    const canvasId = RoomPreviewer.PREVIEW_CANVAS_ID;
+    let viewMode: 'default' | 'fit' | 'user' = 'default';
+    const roomBounds = () => {
       engine.runUpdate();
-      const roomId = preview.roomId;
-      const canvasId = RoomPreviewer.PREVIEW_CANVAS_ID;
-      let bounds = engine.getRoomObjectBoundingRectangle(roomId, RoomEngine.ROOM_OBJECT_ID, RoomObjectCategory.ROOM, canvasId);
-      if (!bounds?.width || !bounds.height) return;
-      const currentScale = engine.getRoomInstanceRenderingCanvasScale(roomId, canvasId);
-      const scale = Math.min(1, (application.screen.width - 64) / (bounds.width / currentScale), (application.screen.height - 64) / (bounds.height / currentScale));
-      engine.setRoomInstanceRenderingCanvasScale(roomId, canvasId, scale);
-      engine.runUpdate();
-      bounds = engine.getRoomObjectBoundingRectangle(roomId, RoomEngine.ROOM_OBJECT_ID, RoomObjectCategory.ROOM, canvasId);
-      const offset = engine.getRoomInstanceRenderingCanvasOffset(roomId, canvasId);
-      engine.setRoomInstanceRenderingCanvasOffset(roomId, canvasId, new Point(offset.x + application.screen.width / 2 - bounds.x - bounds.width / 2, offset.y + application.screen.height / 2 - bounds.y - bounds.height / 2));
+      const bounds = engine.getRoomObjectBoundingRectangle(roomId(), RoomEngine.ROOM_OBJECT_ID, RoomObjectCategory.ROOM, canvasId);
+      return bounds?.width && bounds.height ? bounds : null;
     };
+    // Screen = offset + scale * local; applies a scale while keeping the point under (px, py) fixed.
+    const applyScale = (next: number, px: number, py: number) => {
+      const rid = roomId();
+      const scale = engine.getRoomInstanceRenderingCanvasScale(rid, canvasId);
+      const offset = engine.getRoomInstanceRenderingCanvasOffset(rid, canvasId);
+      next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next));
+      const localX = (px - offset.x) / scale;
+      const localY = (py - offset.y) / scale;
+      engine.setRoomInstanceRenderingCanvasScale(rid, canvasId, next, null, null, true);
+      engine.setRoomInstanceRenderingCanvasOffset(rid, canvasId, new Point(px - localX * next, py - localY * next));
+      engine.runUpdate();
+      return next;
+    };
+    const centerRoom = () => {
+      const bounds = roomBounds();
+      if (!bounds) return;
+      const offset = engine.getRoomInstanceRenderingCanvasOffset(roomId(), canvasId);
+      engine.setRoomInstanceRenderingCanvasOffset(roomId(), canvasId, new Point(
+        offset.x + application.screen.width / 2 - bounds.x - bounds.width / 2,
+        offset.y + application.screen.height / 2 - bounds.y - bounds.height / 2));
+      engine.runUpdate();
+    };
+    const fitRoom = () => {
+      if (disposed || !preview || viewMode === 'user') return;
+      const bounds = roomBounds();
+      if (!bounds) return;
+      const rid = roomId();
+      const current = engine.getRoomInstanceRenderingCanvasScale(rid, canvasId);
+      // 'default' keeps the natural size (1x); 'fit' shrinks/grows to show the entire room.
+      const target = viewMode === 'fit'
+        ? Math.min(MAX_ZOOM, (application.screen.width - 64) / (bounds.width / current), (application.screen.height - 64) / (bounds.height / current))
+        : 1;
+      applyScale(target, application.screen.width / 2, application.screen.height / 2);
+      centerRoom();
+    };
+    const setViewMode = (mode: 'default' | 'fit') => { viewMode = mode; cancelAnimationFrame(fitFrame); fitRoom(); };
+    const panBy = (dx: number, dy: number) => {
+      if (disposed || !preview) return;
+      const offset = engine.getRoomInstanceRenderingCanvasOffset(roomId(), canvasId);
+      engine.setRoomInstanceRenderingCanvasOffset(roomId(), canvasId, new Point(offset.x + dx, offset.y + dy));
+      viewMode = 'user';
+      engine.runUpdate();
+    };
+    const zoomBy = (factor: number, clientX?: number, clientY?: number) => {
+      if (disposed || !preview) return 1;
+      const point = clientX === undefined || clientY === undefined
+        ? new Point(application.screen.width / 2, application.screen.height / 2)
+        : canvasPoint(clientX, clientY);
+      viewMode = 'user';
+      return applyScale(engine.getRoomInstanceRenderingCanvasScale(roomId(), canvasId) * factor, point.x, point.y);
+    };
+    const setZoom = (scale: number) => {
+      if (disposed || !preview) return 1;
+      viewMode = 'user';
+      return applyScale(scale, application.screen.width / 2, application.screen.height / 2);
+    };
+    const getZoom = () => disposed || !preview ? 1 : engine.getRoomInstanceRenderingCanvasScale(roomId(), canvasId);
     const scheduleFit = () => { cancelAnimationFrame(fitFrame); fitFrame = requestAnimationFrame(fitRoom); };
+    // The engine dispatches ROOM_ZOOMED on every scale change, including automatic fits.
+    engine.events.addEventListener(RoomEngineEvent.ROOM_ZOOMED, () => { try { onZoom?.(getZoom()); } catch { /* label only */ } });
     const resize = () => {
       if (disposed) return;
       const width = Math.max(host.clientWidth, 1);
@@ -203,44 +277,58 @@ export async function mountNitroPreview(host: HTMLElement, config: Record<string
     const bundles = new Map<string, Promise<void>>();
     const thumbnails = new Map<string, string>();
     const placed = new Map<number, { item: PreviewItem; entry: CatalogEntry }>();
+    const failures = new Map<number, { item: PreviewItem; entry?: CatalogEntry; message: string }>();
     const ghostId = -2147483000;
     let ghostEntry: CatalogEntry | undefined;
     let modelRows: string[] = [];
     let modelText = '';
+    let wallHeight = WALL_HEIGHT_DEFAULT;
+    let floorHeights: number[] = [];
     let thumbnailQueue = Promise.resolve();
-    let activeLoads = 0;
-    const loadQueue: (() => void)[] = [];
-    const limitedLoad = async <T,>(work: () => Promise<T>): Promise<T> => {
-      if (activeLoads >= 4) await new Promise<void>(resolve => loadQueue.push(resolve));
-      activeLoads++;
-      try {
-        if (disposed) throw new Error('O preview foi encerrado.');
-        return await work();
-      } finally { activeLoads--; loadQueue.shift()?.(); }
+    const bundleFor = (name: string) => {
+      const cached = bundles.get(name);
+      if (cached) return cached;
+      if (contentLoader.getCollection(name)) return Promise.resolve();
+      const task = contentLoader.downloadAsset(name, manager.events).then(() => {
+        if (!contentLoader.getCollection(name)) throw new Error(`Pacote inválido ou indisponível: ${name}.nitro.`);
+      });
+      bundles.set(name, task);
+      void task.catch(() => {
+        if (bundles.get(name) !== task) return;
+        bundles.delete(name);
+        if (disposed) return;
+        // The vendored loader keeps completed attempts registered, including failures.
+        const loaderState = contentLoader as unknown as { _pendingContentTypes: string[]; _events: Map<string, unknown> };
+        const index = loaderState._pendingContentTypes.indexOf(name);
+        if (index >= 0) loaderState._pendingContentTypes.splice(index, 1);
+        loaderState._events.delete(name);
+      });
+      return task;
     };
-    const prepare = (entry: CatalogEntry): Promise<AssetInfo> => {
+    const waitForBundle = (name: string) => new Promise<void>((resolve, reject) => {
+      const finish = (error?: unknown) => {
+        if (!pendingDownloads.delete(cancel)) return;
+        clearTimeout(timeout);
+        if (error) reject(error); else resolve();
+      };
+      const cancel = () => finish(new Error('O preview foi encerrado.'));
+      const timeout = window.setTimeout(() => finish(new Error(`Tempo esgotado: ${name}.nitro.`)), 20000);
+      pendingDownloads.add(cancel);
+      bundleFor(name).then(() => finish(), finish);
+    });
+    const prepare = (entry: CatalogEntry, priority = -1): Promise<AssetInfo> => {
       const existing = preparations.get(entry.key);
-      if (existing) return existing;
-      const task = limitedLoad(async () => {
+      if (existing) { assetQueue.promote(entry.key, priority); return existing; }
+      const task: Promise<AssetInfo> = assetQueue.enqueue(entry.key, priority, async () => {
+        if (disposed) throw new Error('O preview foi encerrado.');
         if (!entry.available) throw new Error(`Pacote indisponível: ${entry.packageName}.nitro.`);
-        const request = new AbortController();
-        requests.add(request);
-        const timer = window.setTimeout(() => request.abort(), 15000);
-        let info: AssetInfo;
-        try {
-          const response = await fetch(`/catalog/info/${encodeURIComponent(entry.packageName)}`, { signal: request.signal });
-          if (!response.ok) throw new Error(`Metadados indisponíveis (${response.status}): ${entry.packageName}.`);
-          info = await response.json();
-          if (!Array.isArray(info.directions) || !info.directions.length || !info.directions.every(Number.isFinite) ||
-              !Array.isArray(info.states) || !info.states.length || !info.states.every(Number.isFinite) ||
-              ![0, 1, 2].includes(info.colorChannels)) throw new Error(`Metadados inválidos: ${entry.packageName}.`);
-        } finally { clearTimeout(timer); requests.delete(request); }
+        const info = await readPackageInfo(entry.packageName);
         if (disposed) throw new Error('O preview foi encerrado.');
 
         // Resolve every catalog ID (including local orphan IDs) to the bundle's real name.
         const variant = /\*(\d+)$/.exec(entry.classname);
         const data = new FurnitureData(entry.type === 'floor' ? FurnitureType.FLOOR : FurnitureType.WALL,
-          entry.typeId, entry.classname, entry.packageName, '', entry.name, '', info.revision || 0,
+          entry.typeId, entry.classname, entry.packageName, '', entry.name, '', Number.parseInt(info.revision.slice(0, 8), 16),
           entry.width, entry.height, 0, [], !!variant, variant ? Number(variant[1]) : 0,
           '', -1, false, -1, false, false, '', 0, false, false, false, false, '', '', false);
         const map = entry.type === 'floor' ? floor : wall;
@@ -249,37 +337,12 @@ export async function mountNitroPreview(host: HTMLElement, config: Record<string
         session.furniture = [data];
         contentLoader.loadFurnitureData();
         if (entry.classname !== entry.packageName) contentLoader.setAssetAliasName(entry.classname, entry.packageName);
-        let bundle = bundles.get(entry.packageName);
-        if (!bundle) {
-          bundle = new Promise<void>((resolve, reject) => {
-            let finished = false;
-            const done = (error?: Error) => {
-              if (finished) return;
-              finished = true;
-              clearTimeout(timeout);
-              pendingDownloads.delete(cancel);
-              manager.events.removeEventListener(RoomContentLoadedEvent.RCLE_FAILURE, failed);
-              if (error) reject(error); else resolve();
-            };
-            const failed = (event: RoomContentLoadedEvent) => {
-              if (event.contentType === entry.packageName) done(new Error(`Pacote inválido: ${entry.packageName}.nitro.`));
-            };
-            const cancel = () => done(new Error('O preview foi encerrado.'));
-            const timeout = window.setTimeout(() => done(new Error(`Tempo esgotado: ${entry.packageName}.nitro.`)), 20000);
-            pendingDownloads.add(cancel);
-            manager.events.addEventListener(RoomContentLoadedEvent.RCLE_FAILURE, failed);
-            contentLoader.downloadAsset(entry.packageName, manager.events).then(() => {
-              if (contentLoader.getCollection(entry.packageName)) done();
-              else done(new Error(`O pacote ${entry.packageName}.nitro não contém uma coleção válida.`));
-            }, error => done(error instanceof Error ? error : new Error(String(error))));
-          });
-          bundles.set(entry.packageName, bundle);
-        }
-        await bundle;
+        await waitForBundle(entry.packageName);
         if (disposed) throw new Error('O preview foi encerrado.');
         return info;
       });
       preparations.set(entry.key, task);
+      void task.catch(() => { if (preparations.get(entry.key) === task) preparations.delete(entry.key); });
       return task;
     };
     const thumbnail = (entry: CatalogEntry): Promise<string> => {
@@ -288,7 +351,7 @@ export async function mountNitroPreview(host: HTMLElement, config: Record<string
       const task = thumbnailQueue.then(async () => {
         const cached = thumbnails.get(entry.key);
         if (cached) return cached;
-        const info = await prepare(entry);
+        const info = await prepare(entry, 1);
         const direction = new Vector3d(info.directions[0], 0, 0);
         const result = entry.type === 'floor'
           ? engine.getFurnitureFloorImage(entry.typeId, direction, 32, null, 0, null, info.states[0])
@@ -319,6 +382,9 @@ export async function mountNitroPreview(host: HTMLElement, config: Record<string
         throw new Error(`Rotação ou estado indisponível para ${entry.packageName}.`);
       }
       if (previous && previous.key !== entry.key) remove(item.id, previous);
+      // External-image furniture reads {"w": url} (the hotel's photo format) and loads <url>_small.png.
+      // Without a photo it must stay empty, otherwise the state would be parsed as the picture address.
+      const extra = /^external_image_wallitem/.test(entry.classname) ? (item.photo ? JSON.stringify({ w: `/photos/${item.photo}.png` }) : '') : String(item.state);
       const wall = item.wall;
       if (entry.type === 'wall' && !wall) throw new Error('Selecione uma posição na parede.');
       const location = wall && entry.type === 'wall'
@@ -333,14 +399,17 @@ export async function mountNitroPreview(host: HTMLElement, config: Record<string
         updated = current ? engine.updateRoomObjectFloor(roomId, item.id, location, direction, item.state, data)
           : engine.addFurnitureFloor(roomId, item.id, entry.typeId, location, direction, item.state, data, NaN, -1, 0, -1, '', false, false);
       } else {
-        updated = current ? engine.updateRoomObjectWall(roomId, item.id, location, direction, item.state, String(item.state))
-          : engine.addFurnitureWall(roomId, item.id, entry.typeId, location, direction, item.state, String(item.state), -1, 0, -1, '', false);
+        updated = current ? engine.updateRoomObjectWall(roomId, item.id, location, direction, item.state, extra)
+          : engine.addFurnitureWall(roomId, item.id, entry.typeId, location, direction, item.state, extra, -1, 0, -1, '', false);
       }
       if (!updated) throw new Error(`Não foi possível adicionar ${entry.packageName}.`);
       engine.runUpdate();
       engine.runUpdate();
       const object = engine.getRoomObject(roomId, item.id, category(entry));
       if (!object?.visualization) throw new Error(`Visualização incompatível: ${entry.packageName}.`);
+      // The renderer pads dynamic thumbnails with a black 20 px border; the hotel shows photos edge to edge.
+      // It is read when the picture finishes loading, so turning it off here (before that) removes the frame.
+      if (/^external_image_wallitem/.test(entry.classname)) (object.visualization as unknown as { _hasOutline: boolean })._hasOutline = false;
       for (let index = 0; index < info.colorChannels; index++) {
         const color = item.colors[index] ?? '#FFFFFF';
         if (!/^#[\da-f]{6}$/i.test(color)) throw new Error('Cor inválida. Use #RRGGBB.');
@@ -349,39 +418,73 @@ export async function mountNitroPreview(host: HTMLElement, config: Record<string
       }
       engine.runUpdate();
     };
-    const setItems = async (items: PreviewItem[], entries: Map<string, CatalogEntry>) => {
+    const setItems: NitroPreview['setItems'] = async (items, entries, onErrors) => {
       const version = ++itemsVersion;
-      const errors: { id: number; message: string }[] = [];
-      const prepared = await Promise.all(items.map(async item => {
-        const entry = entries.get(item.key);
-        try {
-          if (!entry) throw new Error(`Móvel desconhecido: ${item.key}.`);
-          return { item, entry, info: await prepare(entry) };
-        } catch (error) { errors.push({ id: item.id, message: error instanceof Error ? error.message : String(error) }); return null; }
-      }));
-      if (disposed || version !== itemsVersion) return { errors: [] };
-      const ids = new Set(items.map(item => item.id));
-      for (const [id, previous] of placed) if (!ids.has(id)) { remove(id, previous.entry); placed.delete(id); }
-      for (const error of errors) {
-        const previous = placed.get(error.id);
-        if (previous) { remove(error.id, previous.entry); placed.delete(error.id); }
+      const active = () => !disposed && version === itemsVersion;
+      const requested = new Map(items.map(item => [item.id, item]));
+      for (const [id, previous] of placed) {
+        if (requested.has(id)) continue;
+        remove(id, previous.entry);
+        placed.delete(id);
       }
-      for (const value of prepared) {
-        if (!value) continue;
-        const { item, entry, info } = value;
+      for (const [id, failure] of failures) {
+        if (requested.get(id) !== failure.item || entries.get(failure.item.key) !== failure.entry) failures.delete(id);
+      }
+      const errors = () => [...failures].map(([id, failure]) => ({ id, message: failure.message }));
+      const fail = (item: PreviewItem, entry: CatalogEntry | undefined, error: unknown) => {
         const previous = placed.get(item.id);
-        if (previous && JSON.stringify(previous.item) === JSON.stringify(item)) continue;
-        try {
-          apply(item, entry, info, previous?.entry);
-          placed.set(item.id, { item: structuredClone(item), entry });
-        } catch (error) {
-          remove(item.id, entry);
-          placed.delete(item.id);
-          errors.push({ id: item.id, message: error instanceof Error ? error.message : String(error) });
-        }
+        if (previous) { remove(item.id, previous.entry); placed.delete(item.id); }
+        failures.set(item.id, { item, entry, message: error instanceof Error ? error.message : String(error) });
+      };
+      const groups = new Map<CatalogEntry, PreviewItem[]>();
+      for (const item of items) {
+        const entry = entries.get(item.key);
+        const previous = placed.get(item.id);
+        if (previous?.item === item && previous.entry === entry) continue;
+        if (!entry) { fail(item, undefined, `Móvel desconhecido: ${item.key}.`); continue; }
+        const group = groups.get(entry);
+        if (group) group.push(item); else groups.set(entry, [item]);
       }
+      onErrors?.(errors());
+      let sliceStart = performance.now();
+      let applyTail = Promise.resolve();
+      await Promise.all([...groups].map(async ([entry, group]) => {
+        let info: AssetInfo;
+        try { info = await prepare(entry, 0); }
+        catch (error) {
+          if (active()) { for (const item of group) fail(item, entry, error); onErrors?.(errors()); }
+          return;
+        }
+        if (!active()) return;
+        const batch = applyTail.then(async () => {
+          let changedErrors = false;
+          for (const item of group) {
+            if (performance.now() - sliceStart > 12) {
+              await new Promise<void>(resolve => setTimeout(resolve, 0));
+              sliceStart = performance.now();
+            }
+            if (!active()) return;
+            const previous = placed.get(item.id);
+            // The picture address is read once per object, so a different photo needs a fresh object.
+            if (previous && previous.item.photo !== item.photo) remove(item.id, previous.entry);
+            try {
+              apply(item, entry, info, previous?.entry);
+              placed.set(item.id, { item, entry });
+              changedErrors = failures.delete(item.id) || changedErrors;
+            } catch (error) {
+              remove(item.id, entry);
+              fail(item, entry, error);
+              changedErrors = true;
+            }
+          }
+          if (active() && changedErrors) onErrors?.(errors());
+        });
+        applyTail = batch.catch(() => {});
+        await batch;
+      }));
+      if (!active()) return { errors: [] };
       engine.runUpdate();
-      return { errors };
+      return { errors: errors() };
     };
     const ghost = async (item: PreviewItem | null, entries: Map<string, CatalogEntry>) => {
       const version = ++ghostVersion;
@@ -400,48 +503,136 @@ export async function mountNitroPreview(host: HTMLElement, config: Record<string
     };
     const hitTest = (clientX: number, clientY: number): number | null => {
       if (disposed || !preview) return null;
+      const projection = roomProjection();
+      if (!projection) return null;
       const point = canvasPoint(clientX, clientY);
-      const geometry = engine.getRoomInstanceGeometry(preview.roomId, RoomPreviewer.PREVIEW_CANVAS_ID);
       let result: number | null = null;
       let front = Infinity;
       for (const [id, value] of placed) {
-        const bounds = engine.getRoomObjectBoundingRectangle(preview.roomId, id, category(value.entry), RoomPreviewer.PREVIEW_CANVAS_ID);
-        const object = engine.getRoomObject(preview.roomId, id, category(value.entry));
-        const depth = object && geometry?.getScreenPosition(object.getLocation())?.z;
-        if (bounds?.contains(point.x, point.y) && typeof depth === 'number' && depth < front) { front = depth; result = id; }
+        const hit = itemBounds(id, value.entry, projection);
+        if (hit?.bounds.contains(point.x, point.y) && hit.depth < front) { front = hit.depth; result = id; }
       }
       return result;
     };
-    const getPlacement: NitroPreview['getPlacement'] = (clientX, clientY, type) => {
+    const itemBounds = (id: number, entry: CatalogEntry, projection: NonNullable<ReturnType<typeof roomProjection>>) => {
+      const object = engine.getRoomObject(roomId(), id, category(entry));
+      if (!object?.visualization) return null;
+      const position = projection.geometry.getScreenPosition(object.getLocation());
+      if (!position) return null;
+      const bounds = object.visualization.getBoundingRectangle();
+      if (!bounds?.width || !bounds.height) return null;
+      const { scale, centerX, centerY } = projection;
+      return {
+        bounds: new Rectangle(
+          (bounds.x + Math.round(position.x)) * scale + centerX,
+          (bounds.y + Math.round(position.y)) * scale + centerY,
+          bounds.width * scale, bounds.height * scale,
+        ),
+        depth: position.z,
+      };
+    };
+    let selectedItemId: number | null = null;
+    const selectionTint = new ColorMatrixFilter();
+    // Mix a little amber into the rendered pixels while keeping their alpha and detail.
+    selectionTint.matrix = [
+      0.76, 0, 0, 0, 0.226,
+      0, 0.76, 0, 0, 0.180,
+      0, 0, 0.76, 0, 0.095,
+      0, 0, 0, 1, 0,
+    ];
+    const tinted = new Set<IRoomObjectSprite>();
+    const updateSelection = () => {
+      const id = selectedItemId;
+      const value = id === null ? undefined : placed.get(id);
+      if (!value && !tinted.size) return;
+      const object = id !== null && value ? engine.getRoomObject(roomId(), id, category(value.entry)) : undefined;
+      const visual = object?.visualization;
+      const layers = visual instanceof RoomObjectSpriteVisualization
+        ? visual.sprites.filter(sprite => sprite?.visible && !/_\d+_sd_/.test(sprite.name))
+        : [];
+      for (const sprite of tinted) {
+        if (layers.includes(sprite)) continue;
+        sprite.filters = (sprite.filters ?? []).filter(filter => filter !== selectionTint);
+        tinted.delete(sprite);
+      }
+      for (const sprite of layers) {
+        const filters = sprite.filters ?? [];
+        if (!filters.includes(selectionTint)) sprite.filters = [...filters, selectionTint];
+        tinted.add(sprite);
+      }
+    };
+    application.ticker.add(updateSelection);
+    disposeSelection = () => {
+      selectItem(null);
+      application.ticker.remove(updateSelection);
+      selectionTint.destroy();
+    };
+    const selectItem = (id: number | null) => {
+      selectedItemId = id;
+      updateSelection?.();
+    };
+    const roomProjection = () => {
       if (disposed || !preview || !modelRows.length) return null;
-      const rendering = engine.getRoomInstanceRenderingCanvas(preview.roomId, RoomPreviewer.PREVIEW_CANVAS_ID);
-      const geometry = engine.getRoomInstanceGeometry(preview.roomId, RoomPreviewer.PREVIEW_CANVAS_ID);
+      const rendering = engine.getRoomInstanceRenderingCanvas(preview.roomId, canvasId);
+      const geometry = engine.getRoomInstanceGeometry(preview.roomId, canvasId);
       if (!rendering || !geometry) return null;
+      const { scale } = rendering;
+      return { geometry, scale,
+        centerX: Math.trunc(Math.round(rendering.width / scale) / 2) * scale + rendering.screenOffsetX,
+        centerY: Math.trunc(Math.round(rendering.height / scale) / 2) * scale + rendering.screenOffsetY,
+      };
+    };
+    const getPlacement: NitroPreview['getPlacement'] = (clientX, clientY, type, emptyFloorZ) => {
+      const projection = roomProjection();
+      if (!projection) return null;
+      const { geometry, scale, centerX, centerY } = projection;
       const point = canvasPoint(clientX, clientY);
-      point.x = (point.x - Math.round(rendering.width / 2) - rendering.screenOffsetX) / rendering.scale;
-      point.y = (point.y - Math.round(rendering.height / 2) - rendering.screenOffsetY) / rendering.scale;
+      point.set((point.x - centerX) / scale, (point.y - centerY) / scale);
       if (type === 'wall') {
         for (const side of ['left', 'right'] as const) {
           const wall = geometry.getPlanePosition(point, new Vector3d(-0.5, -0.5, 0), side === 'left' ? new Vector3d(0, 1, 0) : new Vector3d(1, 0, 0), new Vector3d(0, 0, 1));
           const length = side === 'left' ? modelRows.length : modelRows[0].length;
-          if (wall && wall.x >= 0 && wall.x < length && wall.y >= 0 && wall.y <= 3) {
+          if (wall && wall.x >= 0 && wall.x < length && wall.y >= 0 && wall.y <= wallHeight) {
             const position = Math.max(0, wall.x - 0.5);
             return { x: side === 'left' ? 0 : position, y: side === 'left' ? position : 0, z: wall.y, wall: { side, position, height: wall.y } };
           }
         }
         return null;
       }
-      const heights = [...new Set(modelRows.join('').toLowerCase().replace(/x/g, '').split('').map(value => parseInt(value, 36)))].sort((a, b) => b - a);
-      for (const z of heights) {
+      for (const z of floorHeights) {
         const tile = geometry.getPlanePosition(point, new Vector3d(0, 0, z), new Vector3d(1, 0, 0), new Vector3d(0, 1, 0));
         if (!tile) continue;
         const x = Math.round(tile.x), y = Math.round(tile.y);
         const height = modelRows[y]?.[x]?.toLowerCase();
         if (height && height !== 'x' && parseInt(height, 36) === z) return { x, y, z };
       }
+      if (emptyFloorZ !== undefined) {
+        const tile = geometry.getPlanePosition(point, new Vector3d(0, 0, emptyFloorZ), new Vector3d(1, 0, 0), new Vector3d(0, 1, 0));
+        if (tile) {
+          const x = Math.round(tile.x), y = Math.round(tile.y);
+          if (modelRows[y]?.[x] === 'x') return { x, y, z: emptyFloorZ };
+        }
+      }
       return null;
     };
-    const setModel = (model: string) => {
+    const markArea: NitroPreview['markArea'] = (anchors, width = 1, height = 1) => {
+      if (disposed) return;
+      areaOverlay.clear();
+      if (!anchors.length) return;
+      const projection = roomProjection();
+      if (!projection) return;
+      const { geometry, scale, centerX, centerY } = projection;
+      for (const { x, y, z } of anchors) {
+        const corners = [
+          new Vector3d(x - 0.5, y - 0.5, z), new Vector3d(x + width - 0.5, y - 0.5, z),
+          new Vector3d(x + width - 0.5, y + height - 0.5, z), new Vector3d(x - 0.5, y + height - 0.5, z),
+        ].map(corner => geometry.getScreenPoint(corner));
+        if (corners.some(corner => !corner)) continue;
+        areaOverlay.lineStyle(1, 0xf0bf65, 0.8).beginFill(0xf0bf65, 0.24)
+          .drawPolygon(corners.flatMap(corner => [corner.x * scale + centerX, corner.y * scale + centerY])).endFill();
+      }
+    };
+    const setModel: NitroPreview['setModel'] = (model, nextWallHeight) => {
       if (disposed) return;
       const rows = model.replace(/\r\n/g, '\n').trim().split(/[\r\n]/);
       if (!rows.length || rows.length > 64 || !rows[0].length || rows[0].length > 64 ||
@@ -450,20 +641,52 @@ export async function mountNitroPreview(host: HTMLElement, config: Record<string
         throw new Error('O modelo deve ser uma grade retangular de até 64 × 64, com alturas 0–9/a–w e x para vazio.');
       }
       const normalized = rows.join('\r');
-      if (normalized === modelText) return;
+      if (normalized === modelText && nextWallHeight === wallHeight) return;
       itemsVersion++;
       ghostVersion++;
       if (ghostEntry) { remove(ghostId, ghostEntry); ghostEntry = undefined; }
-      for (const [id, value] of placed) remove(id, value.entry);
-      placed.clear();
+      if (normalized !== modelText) {
+        for (const [id, value] of placed) remove(id, value.entry);
+        placed.clear();
+        floorHeights = [...new Set(rows.join('').toLowerCase().replace(/x/g, '').split('').map(value => parseInt(value, 36)))].sort((a, b) => b - a);
+      }
+      // Keep the camera when only heights change; recenter at 1x when the room size changes.
+      const resized = rows.length !== modelRows.length || rows[0].length !== (modelRows[0]?.length ?? 0);
       modelRows = rows;
       modelText = normalized;
-      preview?.updatePreviewModel(normalized, 3);
+      wallHeight = nextWallHeight;
+      // RoomPlaneParser adds its 3.6 base to the parameter.
+      preview?.updatePreviewModel(normalized, Math.round((wallHeight - WALL_HEIGHT_MIN) * 10) / 10);
       engine.runUpdate();
-      scheduleFit();
+      if (resized) { viewMode = 'default'; scheduleFit(); }
+    };
+    const capturePhoto: NitroPreview['capturePhoto'] = ({ x, y }) => {
+      if (disposed || !preview) throw new Error('O quarto foi encerrado.');
+      if (application.screen.width !== host.clientWidth || application.screen.height !== host.clientHeight) resize();
+      const width = application.screen.width, height = application.screen.height;
+      if (![x, y].every(Number.isInteger) || x < 0 || y < 0 || x + PHOTO_SIZE > width || y + PHOTO_SIZE > height) {
+        throw new Error('Posicione a moldura dentro da área do quarto.');
+      }
+      engine.runUpdate();
+      const region = new Rectangle(x, y, PHOTO_SIZE, PHOTO_SIZE);
+      selectionTint.enabled = false;
+      let texture: ReturnType<typeof TextureUtils.generateTexture>;
+      try { texture = TextureUtils.generateTexture(application.stage, region); }
+      finally { selectionTint.enabled = true; }
+      if (!texture) throw new Error('O renderer não conseguiu capturar a imagem.');
+      try {
+        const full = TextureUtils.generateCanvas(texture);
+        const small = document.createElement('canvas');
+        small.width = small.height = 110;
+        const context = small.getContext('2d');
+        if (!full || !context) throw new Error('O navegador não conseguiu criar a foto.');
+        context.imageSmoothingQuality = 'high';
+        context.drawImage(full, 0, 0, small.width, small.height);
+        return { full: full.toDataURL('image/png'), small: small.toDataURL('image/png') };
+      } finally { texture.destroy(true); }
     };
     engine.runUpdate();
-    return { dispose, resize, setModel, prepare, thumbnail, setItems, ghost, hitTest, getPlacement };
+    return { dispose, resize, setModel, capturePhoto, panBy, zoomBy, setZoom, getZoom, fitAll: () => setViewMode('fit'), resetView: () => setViewMode('default'), prepare, thumbnail, setItems, ghost, hitTest, selectItem, getPlacement, markArea };
   } catch (error) {
     dispose();
     throw error;

@@ -2,9 +2,11 @@ import { defineConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
 import { statSync, createReadStream } from 'node:fs';
 import { createCatalogService, copyEssentialAssets } from './tools/catalog-assets.js';
+import { createPhotoService } from './tools/photos.js';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const catalog = createCatalogService(root);
+const photos = createPhotoService(root);
 const requiredAssets = ['FurnitureData.json', ...['room', 'tile_cursor'].map(name => `generic/${name}.nitro`)];
 function assetsStatus() {
   return JSON.stringify({ missing: requiredAssets.filter(path => {
@@ -24,6 +26,7 @@ function serveNitro(request, response, next) {
   } catch { response.statusCode = 404; response.end('Asset Nitro ausente.'); }
 }
 function configure(server) {
+  server.middlewares.use(photos.middleware);
   server.middlewares.use(catalog.middleware);
   server.middlewares.use(serveNitro);
   server.middlewares.use('/assets-status.json', (_request, response) => {
