@@ -1,18 +1,20 @@
 # WIRED — editor local
 
-## Como abrir
+## Instalar e executar
 
-Com Node.js 22.12 ou superior, abra o terminal na pasta onde você salvou o projeto e execute:
+Requer Node.js 22.12 ou superior. Na pasta `nitroroom`:
 
 ```powershell
-npm run dev
+npm ci
+npm run build
+npm run preview
 ```
 
-Acesse [http://127.0.0.1:5173/](http://127.0.0.1:5173/) e mantenha o terminal aberto. Para encerrar, pressione `Ctrl+C` no terminal.
+Abra `http://127.0.0.1:4173/`. Para desenvolver com recarga automática, use `npm run dev` e abra `http://127.0.0.1:5173/`.
 
-Se as dependências ainda não estiverem instaladas, execute `npm ci` antes de iniciar.
+Os pacotes dos mobis não são publicados no Git. Copie seus arquivos `.nitro` para `public/assets/packages/` para preencher o catálogo; o restante do editor e os assets genéricos já estão no repositório.
 
-## Como usar
+## Usar o editor
 
 - Busque mobis no catálogo e use os filtros ou a estrela de favoritos.
 - Arraste um mobi para o quarto. Clique nele para girar, mover, mudar estado, duplicar, excluir ou ajustar altura e cores, quando disponíveis.
@@ -20,5 +22,5 @@ Se as dependências ainda não estiverem instaladas, execute `npm ci` antes de i
 - Clique em **Quarto** para alterar o nome e o mapa: `0` representa piso e `x`, espaço vazio.
 - **Salvar** guarda o projeto neste navegador. Use **Exportar JSON** para guardar uma cópia e **Importar JSON** para abri-la depois.
 
-Mantenha os arquivos `.nitro` em `public/assets/packages/`, com seus nomes originais. O editor funciona sem login; as regras Wired ainda não são executadas.
+O editor funciona sem login; as regras Wired ainda não são executadas.
 

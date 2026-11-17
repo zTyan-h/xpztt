@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.npm-cache/
+public/assets/**
+!public/assets/README.md
+!public/assets/renderer-config.json
+!public/assets/FurnitureData.json
+!public/assets/ProductData.json
+!public/assets/generic/
+public/assets/generic/**
+!public/assets/generic/room.nitro
+!public/assets/generic/tile_cursor.nitro
+*.local.json
+.env
+.env.*
+!.env.example
+.local/
